@@ -4,16 +4,19 @@ import os
 import sys
 import time
 import traceback
+from aiohttp import web
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
+from telethon.sessions import StringSession
 from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
 
 # ==================== CONFIGURATION ====================
 API_ID = 23782654
 API_HASH = "5b001caca4f436c940fea5e060f0a3c0"
-SESSION_NAME = "whisper_final_session"
 
-# Target Channels (Usernames aur IDs dono add hain permanent safety ke liye)
+# String session Render ke Environment Variable se lega
+SESSION_STRING = os.environ.get("SESSION_STRING")
+
 TARGET_CHANNELS = [
     # 1. Chatpateee
     "chatpateee",
@@ -32,12 +35,16 @@ TARGET_CHANNELS = [
     -1004466801780,
 ]
 
-# Destination Group ID
 LOG_GROUP_ID = -1004402300724
 DATA_FILE = "data.txt"
 
-# ==================== CLIENT INITIALIZATION ====================
-client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+if not SESSION_STRING:
+    print(
+        "❌ ERROR: SESSION_STRING Environment Variable nahi mila! Render Environment variables check karein."
+    )
+    sys.exit(1)
+
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
 # ==================== CORE EVENT HANDLER ====================
@@ -45,7 +52,7 @@ client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 async def whisper_handler(event):
     start_time = time.perf_counter()
 
-    # 1. Background Auto-Seen (Mark as Read)
+    # Auto-Seen
     try:
         asyncio.create_task(
             client.send_read_acknowledge(event.chat_id, max_id=event.id)
@@ -53,7 +60,6 @@ async def whisper_handler(event):
     except Exception:
         pass
 
-    # 2. Sirf Buttons (Whispers) ko process karo
     if not event.buttons:
         return
 
@@ -65,7 +71,7 @@ async def whisper_handler(event):
     try:
         secret_text = None
 
-        # Method 1: Ultra-fast click simulation
+        # Direct Click
         try:
             response = await event.click(0)
             if hasattr(response, "message") and response.message:
@@ -75,7 +81,7 @@ async def whisper_handler(event):
         except Exception:
             pass
 
-        # Method 2: Raw MTProto Callback Fallback
+        # Raw Callback Fallback
         if not secret_text:
             try:
                 btn = event.buttons[0][0]
@@ -92,9 +98,11 @@ async def whisper_handler(event):
                 pass
 
         if not secret_text:
-            secret_text = "❌ Secret access nahi mila ya Dusre username ke liye tha"
+            secret_text = (
+                "❌ Secret access nahi mila ya Dusre username ke liye tha"
+            )
 
-        # Safe URL Resolution
+        # Links
         chat = await event.get_chat()
         if getattr(chat, "username", None):
             msg_link = f"https://t.me/{chat.username}/{event.id}"
@@ -104,11 +112,9 @@ async def whisper_handler(event):
             msg_link = f"https://t.me/c/{clean_id}/{event.id}"
             channel_link = f"Private ID: {event.chat_id}"
 
-        # Latency Calculation
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
         current_time = datetime.now().strftime("[%d-%m-%Y %H:%M:%S]")
 
-        # 3. Asynchronously Save to data.txt
         file_entry = (
             f"{current_time} CHANNEL: {chat_name}\n"
             f"Channel Link: {channel_link}\n"
@@ -121,7 +127,6 @@ async def whisper_handler(event):
         with open(DATA_FILE, "a", encoding="utf-8") as f:
             f.write(file_entry)
 
-        # 4. Dispatch to Destination Group
         log_payload = (
             f"🔓 **Whisper Intercepted & Decoded!**\n\n"
             f"📝 **Secret Message:**\n`{secret_text}`\n\n"
@@ -131,8 +136,7 @@ async def whisper_handler(event):
         )
 
         await client.send_message(LOG_GROUP_ID, log_payload)
-        print(f"✅ Decoded & Forwarded in {elapsed_ms}ms!")
-        print(f"👉 Text: {secret_text}\n")
+        print(f"✅ Decoded & Forwarded in {elapsed_ms}ms! 👉 {secret_text}")
 
     except FloodWaitError as e:
         print(f"⚠️ Telegram FloodWait: Sleeping for {e.seconds}s...")
@@ -142,56 +146,53 @@ async def whisper_handler(event):
         traceback.print_exc()
 
 
+# ==================== WEB SERVER (FOR UPTIMEROBOT) ====================
+async def handle_ping(request):
+    return web.Response(text="Bot is Running 24/7 Active!")
+
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 Web Server started on Port {port}")
+
+
 # ==================== STARTUP SEQUENCE ====================
 async def main():
-    os.system("cls" if os.name == "nt" else "clear")
     print("==================================================")
-    print("🚀 PRO WHISPER AUTOMATOR (High-Performance Engine)")
+    print("🚀 PRO WHISPER AUTOMATOR (Cloud Render Engine)")
     print("==================================================")
 
     await client.start()
-    print("🔄 Telegram Connection Established!")
-    print("📡 Pre-loading Dialogs & Channels into Memory...")
+    print("🔄 Telegram Connection Established via StringSession!")
 
-    # Load all dialogs to warm up cache
+    # Start Web Server in Background
+    await start_web_server()
+
+    # Pre-load channels
     await client.get_dialogs()
-
-    # Verify all targets
-    print("\n[Target Channels Status]")
-    raw_targets = [
-        "chatpateee",
-        "its_diyaa",
-        "UnhingedAspirand",
-        "channelizpublick",
-        "fewmehh",
-    ]
-    for ch in raw_targets:
-        try:
-            entity = await client.get_entity(ch)
-            print(f"  🟢 Connected: {entity.title} (@{ch})")
-        except Exception as e:
-            print(f"  🔴 Target Notice (@{ch}): {e}")
 
     # Destination Group Verification
     try:
         await client.send_message(
             LOG_GROUP_ID,
-            "⚡ **PRO Whisper Engine Online!**\nAuto-Seen: `Active`\nData Logging: `Active`",
+            "🚀 **Whisper Automator 24/7 Render Cloud Engine Online!**\nAuto-Seen: `Active`\nData Logging: `Active`",
         )
-        print(f"\n🟢 Log Group Verified: {LOG_GROUP_ID}")
+        print(f"🟢 Log Group Verified: {LOG_GROUP_ID}")
     except Exception as e:
-        print(f"\n🔴 Log Group Warning: {e}")
+        print(f"🔴 Log Group Warning: {e}")
 
     print("==================================================")
-    print("🔥 Bot Listening 24/7. Ready to capture whispers!")
+    print("🔥 Bot Listening 24/7 on Cloud. Ready to capture whispers!")
     print("==================================================\n")
 
     await client.run_until_disconnected()
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n🛑 Script stopped by user.")
-        sys.exit()
+    asyncio.run(main())
