@@ -14,17 +14,14 @@ API_ID = 23782654
 API_HASH = "5b001caca4f436c940fea5e060f0a3c0"
 SESSION_STRING = os.environ.get("SESSION_STRING")
 
+# Default Target Channels List
 TARGET_CHANNELS = [
-    "chatpateee",
-    -1002133821583,
-    "its_diyaa",
-    -1004469467503,
-    "UnhingedAspirand",
-    -1003954728685,
-    "channelizpublick",
-    -1004303326817,
-    "fewmehh",
-    -1004466801780,
+    "chatpateee", -1002133821583,
+    "its_diyaa", -1004469467503,
+    "UnhingedAspirand", -1003954728685,
+    "channelizpublick", -1004303326817,
+    "fewmehh", -1004466801780,
+    "vidsyapin", -1004293474310,  # Naya Channel Added
 ]
 
 WHISPER_BOT_ID = 518335359  # @PsstRobot
@@ -32,6 +29,77 @@ LOG_GROUP_ID = -1004402300724
 
 ctx = {"title": "Target Channel", "link": "#", "time": 0}
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+
+
+# ==================== CONFIG DYNAMIC PERSISTENCE ====================
+async def load_config():
+    global TARGET_CHANNELS
+    try:
+        async for msg in client.iter_messages(
+            LOG_GROUP_ID, search="#WHISPER_CONFIG"
+        ):
+            if msg.text and "#WHISPER_CONFIG" in msg.text:
+                lines = msg.text.split("\n")
+                new_targets = []
+                for line in lines:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        if line.lstrip("-").isdigit():
+                            new_targets.append(int(line))
+                        else:
+                            new_targets.append(
+                                line.replace("@", "").replace(
+                                    "https://t.me/", ""
+                                )
+                            )
+                if new_targets:
+                    TARGET_CHANNELS = list(set(TARGET_CHANNELS + new_targets))
+                    print(
+                        f"✅ Dynamic channels loaded from Telegram config!",
+                        flush=True,
+                    )
+                break
+    except Exception as e:
+        print(f"⚠️ Config load note: {e}", flush=True)
+
+
+async def save_config():
+    text = "#WHISPER_CONFIG\n" + "\n".join(
+        str(c) for c in sorted(list(set(TARGET_CHANNELS)), key=str)
+    )
+    try:
+        found_msg = None
+        async for msg in client.iter_messages(
+            LOG_GROUP_ID, search="#WHISPER_CONFIG"
+        ):
+            if msg.text and "#WHISPER_CONFIG" in msg.text:
+                found_msg = msg
+                break
+        if found_msg:
+            await found_msg.edit(text)
+        else:
+            m = await client.send_message(LOG_GROUP_ID, text)
+            try:
+                await m.pin()
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"❌ Config save error: {e}", flush=True)
+
+
+def is_target_chat(event):
+    chat_id = event.chat_id
+    username = getattr(event.chat, "username", None)
+    for target in TARGET_CHANNELS:
+        if isinstance(target, int) and target == chat_id:
+            return True
+        if (
+            isinstance(target, str)
+            and username
+            and target.lower() == username.lower()
+        ):
+            return True
+    return False
 
 
 # ==================== CLEAN FORMATTER ====================
@@ -46,7 +114,6 @@ def format_log(content, chat_name, speed, msg_link, is_media=False):
     )
 
 
-# ==================== HELPERS ====================
 async def get_msg_link(event):
     try:
         chat = await event.get_chat()
@@ -59,11 +126,85 @@ async def get_msg_link(event):
         return "#"
 
 
-# ==================== HANDLERS ====================
-@client.on(events.NewMessage(chats=TARGET_CHANNELS))
-async def channel_handler(event):
-    if not event.buttons:
+# ==================== CHANNEL COMMANDS HANDLER ====================
+@client.on(
+    events.NewMessage(
+        chats=[LOG_GROUP_ID], pattern=r"^/(add|del|list|channels)(?:\s+(.+))?"
+    )
+)
+async def command_handler(event):
+    cmd = event.pattern_match.group(1).lower()
+    arg = event.pattern_match.group(2)
+
+    if cmd in ["list", "channels"]:
+        unique_targets = sorted(list(set(TARGET_CHANNELS)), key=str)
+        text = "📋 **Active Target Channels:**\n\n"
+        for c in unique_targets:
+            text += f"• `{c}`\n"
+        text += (
+            "\n💡 *Add feature:* `/add <channel>`\n💡 *Remove:* `/del <channel>`"
+        )
+        await event.reply(text)
         return
+
+    if not arg:
+        await event.reply(
+            "⚠️ **Usage:**\n`/add <username_or_id>`\n`/del <username_or_id>`"
+        )
+        return
+
+    arg_clean = arg.strip().replace("https://t.me/", "").replace("@", "")
+    if arg_clean.lstrip("-").isdigit():
+        arg_val = int(arg_clean)
+    else:
+        arg_val = arg_clean.lower()
+
+    if cmd == "add":
+        if arg_val not in TARGET_CHANNELS:
+            TARGET_CHANNELS.append(arg_val)
+            try:
+                ent = await client.get_entity(arg_val)
+                if getattr(ent, "id", None):
+                    true_id = int(
+                        f"-100{ent.id}"
+                        if not str(ent.id).startswith("-100")
+                        else ent.id
+                    )
+                    if true_id not in TARGET_CHANNELS:
+                        TARGET_CHANNELS.append(true_id)
+            except Exception as e:
+                print(f"Entity cache note: {e}", flush=True)
+
+            await save_config()
+            await event.reply(
+                f"✅ **Channel Added Successfully:** `{arg_clean}`"
+            )
+            print(f"➕ Added Channel via GC: {arg_clean}", flush=True)
+        else:
+            await event.reply(
+                f"⚠️ **Channel Pehle Se Active Hai:** `{arg_clean}`"
+            )
+
+    elif cmd == "del":
+        TARGET_CHANNELS[:] = [
+            c
+            for c in TARGET_CHANNELS
+            if str(c).lower() != str(arg_val).lower()
+        ]
+        await save_config()
+        await event.reply(
+            f"🗑️ **Channel Removed Successfully:** `{arg_clean}`"
+        )
+        print(f"➖ Removed Channel via GC: {arg_clean}", flush=True)
+
+
+# ==================== MAIN WHISPER HANDLERS ====================
+@client.on(events.NewMessage())
+async def channel_handler(event):
+    # Dynamic target check
+    if not is_target_chat(event) or not event.buttons:
+        return
+
     start_time = time.perf_counter()
     chat_name = event.chat.title if event.chat else "Target Channel"
     msg_link = await get_msg_link(event)
@@ -98,9 +239,7 @@ async def channel_handler(event):
         elif popup_text:
             elapsed = round((time.perf_counter() - start_time) * 1000, 2)
             msg = format_log(popup_text, chat_name, elapsed, msg_link)
-            await client.send_message(
-                LOG_GROUP_ID, msg, link_preview=False
-            )
+            await client.send_message(LOG_GROUP_ID, msg, link_preview=False)
             print(f"✅ Text Forwarded ({elapsed} ms)", flush=True)
 
     except Exception as e:
@@ -154,13 +293,17 @@ async def main():
     await web.TCPSite(
         runner, "0.0.0.0", int(os.environ.get("PORT", 10000))
     ).start()
+
     await client.get_dialogs()
+    await load_config()
 
     startup_msg = (
-        "🤖 **Whisper Automator Active!**\n⚡ System online and listening..."
+        "🤖 **Whisper Automator Active!**\n"
+        "⚡ Dynamic Channel Management Enabled.\n"
+        "💡 Type `/list` to see active target channels."
     )
     await client.send_message(LOG_GROUP_ID, startup_msg)
-    print("🟢 SYSTEM ONLINE", flush=True)
+    print("🟢 SYSTEM ONLINE WITH DYNAMIC COMMANDS", flush=True)
     await client.run_until_disconnected()
 
 
