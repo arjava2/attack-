@@ -14,7 +14,7 @@ API_ID = 23782654
 API_HASH = "5b001caca4f436c940fea5e060f0a3c0"
 SESSION_STRING = os.environ.get("SESSION_STRING")
 
-# Default Target Channels (Startup Only)
+# Default Target Channels
 TARGET_CHANNELS = [
     "chatpateee",
     -1002133821583,
@@ -33,13 +33,22 @@ TARGET_CHANNELS = [
 WHISPER_BOT_ID = 518335359  # @PsstRobot
 LOG_GROUP_ID = -1004402300724
 
+# Features State & Stats
+GHOST_MODE = False
+STATS = {
+    "total": 0,
+    "text": 0,
+    "media": 0,
+    "channels": {},
+}
+
 ctx = {"title": "Target Channel", "link": "#", "time": 0}
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
-# ==================== CONFIG PERSISTENCE ====================
+# ==================== CONFIG & STATS PERSISTENCE ====================
 async def load_config():
-    global TARGET_CHANNELS
+    global TARGET_CHANNELS, GHOST_MODE, STATS
     try:
         async for msg in client.iter_messages(
             LOG_GROUP_ID, search="#WHISPER_CONFIG"
@@ -47,14 +56,27 @@ async def load_config():
             if msg.text and "#WHISPER_CONFIG" in msg.text:
                 lines = msg.text.split("\n")
                 new_list = []
-                for line in lines[1:]:
-                    line = line.strip(" `•")
-                    if not line:
-                        continue
-                    if line.lstrip("-").isdigit():
-                        new_list.append(int(line))
-                    else:
-                        new_list.append(line.lower())
+                for line in lines:
+                    line_clean = line.strip(" `•")
+                    if line.startswith("GHOST_MODE:"):
+                        GHOST_MODE = (
+                            line.split(":")[-1].strip().lower() == "true"
+                        )
+                    elif line.startswith("STAT_TOTAL:"):
+                        STATS["total"] = int(line.split(":")[-1].strip())
+                    elif line.startswith("STAT_TEXT:"):
+                        STATS["text"] = int(line.split(":")[-1].strip())
+                    elif line.startswith("STAT_MEDIA:"):
+                        STATS["media"] = int(line.split(":")[-1].strip())
+                    elif (
+                        line_clean
+                        and not line.startswith("#")
+                        and ":" not in line
+                    ):
+                        if line_clean.lstrip("-").isdigit():
+                            new_list.append(int(line_clean))
+                        else:
+                            new_list.append(line_clean.lower())
                 if new_list:
                     TARGET_CHANNELS = list(set(new_list))
                 break
@@ -64,7 +86,14 @@ async def load_config():
 
 async def save_config():
     unique_targets = sorted(list(set(TARGET_CHANNELS)), key=lambda x: str(x))
-    text = "#WHISPER_CONFIG\n"
+    text = (
+        f"#WHISPER_CONFIG\n"
+        f"GHOST_MODE: {GHOST_MODE}\n"
+        f"STAT_TOTAL: {STATS['total']}\n"
+        f"STAT_TEXT: {STATS['text']}\n"
+        f"STAT_MEDIA: {STATS['media']}\n\n"
+        f"TARGETS:\n"
+    )
     for c in unique_targets:
         text += f"• `{c}`\n"
     try:
@@ -125,22 +154,64 @@ async def get_msg_link(event):
 # ==================== COMMANDS HANDLER ====================
 @client.on(
     events.NewMessage(
-        chats=[LOG_GROUP_ID], pattern=r"^/(add|del|list)(?:\s+(.+))?"
+        chats=[LOG_GROUP_ID],
+        pattern=r"^/(add|del|list|stats|ghost)(?:\s+(.+))?",
     )
 )
 async def command_handler(event):
-    global TARGET_CHANNELS  # Fix: Declared right at the top
+    global TARGET_CHANNELS, GHOST_MODE, STATS
     cmd = event.pattern_match.group(1).lower()
     arg = event.pattern_match.group(2)
 
+    # 1. LIST COMMAND
     if cmd == "list":
         await load_config()
-        text = "📋 **Active Targets:**\n\n" + "\n".join(
-            [f"• `{c}`" for c in TARGET_CHANNELS]
+        ghost_status = "👻 ON" if GHOST_MODE else "👀 OFF (Normal)"
+        text = f"📋 **Active Targets:**\n" f"👻 **Ghost Mode:** `{ghost_status}`\n\n"
+        text += "\n".join([f"• `{c}`" for c in TARGET_CHANNELS])
+        await event.reply(text)
+        return
+
+    # 2. STATS COMMAND
+    if cmd == "stats":
+        ghost_status = "Enabled 👻" if GHOST_MODE else "Disabled 👀"
+        text = (
+            f"📊 **Whisper Automator Statistics:**\n\n"
+            f"🎯 **Total Intercepted:** `{STATS['total']}`\n"
+            f"💬 **Text Whispers:** `{STATS['text']}`\n"
+            f"🖼️ **Media Whispers:** `{STATS['media']}`\n"
+            f"👻 **Ghost Mode:** `{ghost_status}`\n"
+            f"📡 **Active Channels:** `{len(set(TARGET_CHANNELS))}`"
         )
         await event.reply(text)
         return
 
+    # 3. GHOST MODE COMMAND
+    if cmd == "ghost":
+        if arg:
+            val = arg.strip().lower()
+            if val in ["on", "enable", "true", "1"]:
+                GHOST_MODE = True
+                await save_config()
+                await event.reply(
+                    "👻 **Ghost Mode ENABLED!**\nMessages will NO LONGER be marked as read in channels."
+                )
+            elif val in ["off", "disable", "false", "0"]:
+                GHOST_MODE = False
+                await save_config()
+                await event.reply(
+                    "👀 **Ghost Mode DISABLED!**\nMessages will be automatically marked as read."
+                )
+            else:
+                await event.reply("⚠️ Usage: `/ghost on` or `/ghost off`")
+        else:
+            status = "ENABLED 👻" if GHOST_MODE else "DISABLED 👀"
+            await event.reply(
+                f"👻 **Ghost Mode Status:** `{status}`\nUsage: `/ghost on` or `/ghost off`"
+            )
+        return
+
+    # 4. ADD & DEL COMMANDS
     if not arg:
         return await event.reply(
             "⚠️ **Usage:** `/add <channel>` or `/del <channel>`"
@@ -189,8 +260,16 @@ async def command_handler(event):
 # ==================== WHISPER ENGINE ====================
 @client.on(events.NewMessage())
 async def main_handler(event):
+    global STATS
     if not is_target_chat(event) or not event.buttons:
         return
+
+    # Ghost Mode Check: Sirf tabhi read acknowledge bhejenge agar Ghost Mode OFF ho
+    if not GHOST_MODE:
+        try:
+            await client.send_read_acknowledge(event.chat_id, max_id=event.id)
+        except Exception:
+            pass
 
     start_time = time.perf_counter()
     chat_name = event.chat.title if event.chat else "Target"
@@ -224,6 +303,12 @@ async def main_handler(event):
             )
         elif popup_text:
             elapsed = round((time.perf_counter() - start_time) * 1000, 2)
+
+            # Update stats
+            STATS["total"] += 1
+            STATS["text"] += 1
+            asyncio.create_task(save_config())
+
             await client.send_message(
                 LOG_GROUP_ID,
                 format_log(popup_text, chat_name, elapsed, msg_link),
@@ -236,6 +321,7 @@ async def main_handler(event):
 
 @client.on(events.NewMessage(from_users=WHISPER_BOT_ID))
 async def bot_dm_handler(event):
+    global STATS
     if event.buttons:
         await event.click(0)
         return
@@ -251,6 +337,12 @@ async def bot_dm_handler(event):
         msg = format_log(
             media_desc, ctx["title"], elapsed, ctx["link"], is_media=True
         )
+
+        # Update stats
+        STATS["total"] += 1
+        STATS["media"] += 1
+        asyncio.create_task(save_config())
+
         await client.send_message(
             LOG_GROUP_ID,
             msg,
@@ -280,11 +372,15 @@ async def main():
     await client.get_dialogs()
     await load_config()
 
+    ghost_str = "ENABLED 👻" if GHOST_MODE else "DISABLED 👀"
     await client.send_message(
         LOG_GROUP_ID,
-        "🤖 **Whisper Automator V3 (Fixed Scope Error) Online!**",
+        f"🤖 **Whisper Automator V4 Online!**\n"
+        f"📊 Stats Tracking: `Active`\n"
+        f"👻 Ghost Mode: `{ghost_str}`\n"
+        f"💡 Commands: `/stats` | `/ghost on` | `/ghost off` | `/list`",
     )
-    print("🟢 SYSTEM ONLINE", flush=True)
+    print("🟢 SYSTEM ONLINE WITH STATS & GHOST MODE", flush=True)
     await client.run_until_disconnected()
 
 
